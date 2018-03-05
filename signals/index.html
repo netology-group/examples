@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Options for connection</title>
+    <link rel="stylesheet" href="https://maxcdn.bootstrapcdn.com/bootstrap/4.0.0/css/bootstrap.min.css" integrity="sha384-Gn5384xqQ1aoWXA+058RXPxPg6fy4IWvTNh0E263XmFcJlSAwiGgFAW/dAiS6JXm" crossorigin="anonymous">
+    <script src="https://wzrd.in/standalone/uuid%2Fv4@latest"></script>
+</head>
+<body>
+
+<div class="container">
+    <div class="row justify-content-md-center">
+        <div class="col-sm-8">
+            <form>
+                <div class="form-group row">
+                    <label for="url" class="col-sm-3 col-form-label">Broker URL</label>
+                    <div class="col-sm-9">
+                        <input type="text" class="form-control" id="url">
+                    </div>
+                </div>
+                <div class="form-group row">
+                    <label for="accountId" class="col-sm-3 col-form-label">Account id (UUID)</label>
+                    <div class="col-sm-7">
+                        <input type="text" class="form-control" id="accountId">
+                    </div>
+                    <div class="col-sm-2">
+                        <button id="generateAccountId" type="button" class="btn btn-light">Generate</button>
+                    </div>
+                </div>
+                <div class="form-group row">
+                    <label for="agentId" class="col-sm-3 col-form-label">Agent id (UUID)</label>
+                    <div class="col-sm-7">
+                        <input type="text" class="form-control" id="agentId">
+                    </div>
+                    <div class="col-sm-2">
+                        <button id="generateAgentId" type="button" class="btn btn-light">Generate</button>
+                    </div>
+                </div>
+
+                <div class="form-group row">
+                    <label for="appName" class="col-sm-3 col-form-label">Application name</label>
+                    <div class="col-sm-9">
+                        <input type="text" class="form-control" id="appName" placeholder="signals.example.com">
+                    </div>
+                </div>
+
+                <div class="form-group row">
+                    <label for="roomId" class="col-sm-3 col-form-label">Room id (UUID)</label>
+                    <div class="col-sm-9">
+                        <input type="text" class="form-control" id="roomId">
+                    </div>
+                </div>
+
+                <button id="start" type="button" class="btn btn-primary">Start</button>
+            </form>
+        </div>
+    </div>
+</div>
+
+
+
+<script>
+    const urlInput = document.getElementById('url')
+    const accountIdInput = document.getElementById('accountId')
+    const agentIdInput = document.getElementById('agentId')
+    const appNameInput = document.getElementById('appName')
+    const roomIdInput = document.getElementById('roomId')
+
+    const generateAccountIdBtn = document.getElementById('generateAccountId')
+    const generateAgentIdBtn = document.getElementById('generateAgentId')
+
+    const startBtn = document.getElementById('start')
+
+    generateAccountIdBtn.addEventListener('click', function (event) {
+        accountIdInput.value = uuidv4()
+    })
+
+    generateAgentIdBtn.addEventListener('click', function (event) {
+        agentIdInput.value = uuidv4()
+    })
+
+    startBtn.addEventListener('click', function (event) {
+        let path = './client.html'
+        let url = encodeURIComponent(urlInput.value)
+        let accountId = accountIdInput.value
+        let agentId = agentIdInput.value
+        let appName = appNameInput.value
+        let roomId = roomIdInput.value
+
+        window.open(`${path}?url=${url}&account_id=${accountId}&agent_id=${agentId}&app_name=${appName}&room_id=${roomId}`)
+    })
+</script>
+
+</body>
+</html>

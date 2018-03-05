@@ -1,0 +1,252 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Room</title>
+    <link rel="stylesheet" href="https://maxcdn.bootstrapcdn.com/bootstrap/4.0.0/css/bootstrap.min.css" integrity="sha384-Gn5384xqQ1aoWXA+058RXPxPg6fy4IWvTNh0E263XmFcJlSAwiGgFAW/dAiS6JXm" crossorigin="anonymous">
+    <script src="https://rawgit.com/netology-group/mqtt-client-js/master/dist/index.js"></script>
+    <script src="https://rawgit.com/netology-group/signals-js/master/dist/index.js"></script>
+</head>
+<body>
+
+<div class="container">
+    <div class="row">
+        <div class="col-sm-12">
+            <button id="connectBtn" type="button" class="btn btn-light">Connect</button>
+            <button id="joinBtn" type="button" class="btn btn-success">Join room</button>
+            <button id="leaveBtn" type="button" class="btn btn-danger" hidden disabled>Leave room</button>
+            <!--<button id="getUserMediaBtn" type="button" class="btn btn-light">Get user media</button>-->
+        </div>
+    </div>
+    <div class="row">
+        <div class="col-sm-6">
+            <h2>Agents</h2>
+            <div id="listAgents">
+
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+    const connectBtn = document.getElementById('connectBtn')
+    const joinBtn = document.getElementById('joinBtn')
+    const leaveBtn = document.getElementById('leaveBtn')
+//    const getUserMediaBtn = document.getElementById('getUserMediaBtn')
+    const listAgentsContainer = document.getElementById('listAgents')
+
+    const params = getParams(location.search.slice(1))
+
+    const BROKER = decodeURIComponent(params.url)
+    const ACCOUNT_ID = params.account_id
+    const AGENT_ID = params.agent_id
+    const ROOM_ID = params.room_id
+    const APP_NAME = params.app_name
+    const OPTIONS = {
+        username: `user-${ACCOUNT_ID}`,
+        password: `password-${ACCOUNT_ID}`,
+        clientId: `${AGENT_ID}.${ACCOUNT_ID}`,
+        will: {
+            topic: `agents/${AGENT_ID}/out/${APP_NAME}/api/v1`,
+            payload: `{"jsonrpc":"2.0","method":"agent.delete","params":[{"room_id":"${ROOM_ID}","id":"${AGENT_ID}"}],"id":"${AGENT_ID}"}`
+        }
+    }
+
+    let mqttClient = null
+    let signals = null
+    let agentSub = null
+
+    function handleAgentSubscriptionEvent (event) {
+        console.log('[agentSubscription:event]', event.type, event.data)
+
+        listAgents().then(function (response) {
+            renderAgentList(listAgentsContainer, response)
+        })
+    }
+
+    function bindListeners () {
+        signals.subscribeAgents(ROOM_ID).then((agentSubscription) => {
+            agentSub = agentSubscription
+            agentSub.on('create', handleAgentSubscriptionEvent)
+            agentSub.on('delete', handleAgentSubscriptionEvent)
+        })
+    }
+
+    function unbindListeners () {
+        agentSub.off('create', handleAgentSubscriptionEvent)
+        agentSub.off('delete', handleAgentSubscriptionEvent)
+        agentSub = null
+    }
+
+    connectBtn.addEventListener('click', function (event) {
+        connect()
+    })
+
+    joinBtn.addEventListener('click', function (event) {
+        joinBtn.disabled = true
+
+        joinRoom(ROOM_ID, `Client ${AGENT_ID.split('-')[0]}`).then(function () {
+            joinBtn.hidden = true
+            leaveBtn.disabled = false
+            leaveBtn.hidden = false
+
+            bindListeners()
+
+            listAgents().then(function (response) {
+                renderAgentList(listAgentsContainer, response)
+            })
+        })
+    })
+
+    leaveBtn.addEventListener('click', function (event) {
+        leaveBtn.disabled = true
+
+        leaveRoom(ROOM_ID, AGENT_ID).then(function () {
+            joinBtn.disabled = false
+            joinBtn.hidden = false
+            leaveBtn.hidden = true
+
+            unbindListeners()
+
+            renderAgentList(listAgentsContainer, [])
+        })
+    })
+
+//    getUserMediaBtn.addEventListener('click', function (event) {
+//        gum()
+//    })
+
+    function listAgents () {
+        return signals.listAgents(`room_id:${ROOM_ID}`).then((response) => {
+            console.log('[listAgents]', response)
+
+            return response
+        })
+    }
+
+    function connect () {
+        mqttClient = new MQTTClient(BROKER, OPTIONS)
+        signals = new Signals(mqttClient, AGENT_ID, APP_NAME)
+
+        mqttClient.on(MQTTClient.events.CLOSE, function() {
+            console.log('[mqttClient] close')
+        })
+
+        mqttClient.on(MQTTClient.events.OFFLINE, function() {
+            console.log('[mqttClient] offline')
+        })
+
+        mqttClient.on(MQTTClient.events.CONNECT, function () {
+            console.log('[mqttClient] connected')
+        })
+
+        mqttClient.on(MQTTClient.events.ERROR, function () {
+            console.log('[mqttClient] error')
+        })
+
+//        mqttClient.subscribe(`agents/${AGENT_ID}/out/${APP_NAME}/api/v1`)
+//        mqttClient.on('message', function (topic, message) {
+//            const envelope = JSON.parse(message.toString())
+//            const payload = JSON.parse(envelope.msg)
+//
+//            console.groupCollapsed('[message]')
+//            console.log('[topic]', topic)
+//            console.log('[envelope sub]', envelope.sub)
+//            console.log('[envelope msg]', envelope.msg)
+//            console.log('[payload]', payload)
+//            console.groupEnd()
+//        })
+    }
+
+    function joinRoom (roomId, label) {
+        return signals.createAgent(roomId, {label}).then(function (response) {
+            console.log('[response] signals.createAgent', response)
+
+            return response
+        }).catch((error) => {
+            console.log('[createAgent error]', error)
+        })
+    }
+
+    function leaveRoom (roomId, agentId) {
+        return signals.deleteAgent(roomId, agentId).then(function (response) {
+            console.log('[response] signals.deleteAgent', response)
+
+            return response
+        }).catch((error) => {
+            console.log('[deleteAgent error]', error)
+        })
+    }
+
+//    function gum () {
+//        const constraints = {audio: true, video: true}
+//
+//        navigator.mediaDevices.getUserMedia(constraints)
+//            .then(function(stream) {
+//                const cloneStream = stream.clone()
+//
+//                console.log('[gum] stream', stream)
+//                console.log('[gum] stream getTracks', stream.getTracks())
+//                console.log('[gum] cloneStream', cloneStream)
+//                console.log('[gum] cloneStream getTracks', cloneStream.getTracks())
+//
+//                stream.onactive = function (event) {
+//                    console.log('[stream.onactive]', event)
+//                }
+//
+//                stream.oninactive = function (event) {
+//                    console.log('[stream.oninactive]', event)
+//                }
+//
+//                cloneStream.onactive = function (event) {
+//                    console.log('[stream.onactive]', event)
+//                }
+//
+//                cloneStream.oninactive = function (event) {
+//                    console.log('[stream.oninactive]', event)
+//                }
+//
+//                setTimeout(() => {
+//                    stream.getTracks().forEach((track) => {
+//                        console.log('[gum] track', track)
+//                        track.stop()
+//                    })
+//                }, 5000)
+//            })
+//            .catch(function(err) {
+//                console.log('[gum] error', err)
+//            });
+//    }
+
+    function renderAgentList (target, list) {
+        let content = ''
+
+        list.map((item) => {
+            let text = item.data.label
+
+            if (item.id === AGENT_ID) {
+                text = `<b>${text}</b>`
+            }
+
+            content += `<li class="list-group-item" title="${item.id}">${text}</li>`
+        })
+
+        content = `<ul class="list-group">${content}</ul>`
+
+        target.innerHTML = content
+    }
+
+    function getParams (qs) {
+        const params = {}
+
+        qs.split('&').map((str) => {
+            const [ key, value ] = str.split('=')
+            params[key] = value
+        })
+
+        return params
+    }
+</script>
+
+</body>
+</html>
