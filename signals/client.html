@@ -4,6 +4,8 @@
     <meta charset="UTF-8">
     <title>Room</title>
     <link rel="stylesheet" href="https://maxcdn.bootstrapcdn.com/bootstrap/4.0.0/css/bootstrap.min.css" integrity="sha384-Gn5384xqQ1aoWXA+058RXPxPg6fy4IWvTNh0E263XmFcJlSAwiGgFAW/dAiS6JXm" crossorigin="anonymous">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/open-iconic/1.1.1/font/css/open-iconic-bootstrap.min.css">
+    <script src="https://webrtc.github.io/adapter/adapter-latest.js"></script>
     <script src="https://rawgit.com/netology-group/mqtt-client-js/master/dist/index.js"></script>
     <script src="https://rawgit.com/netology-group/signals-js/master/dist/index.js"></script>
 </head>
@@ -15,7 +17,8 @@
             <button id="connectBtn" type="button" class="btn btn-light">Connect</button>
             <button id="joinBtn" type="button" class="btn btn-success">Join room</button>
             <button id="leaveBtn" type="button" class="btn btn-danger" hidden disabled>Leave room</button>
-            <!--<button id="getUserMediaBtn" type="button" class="btn btn-light">Get user media</button>-->
+            <button id="getUserMediaBtn" type="button" class="btn btn-light">Get user media</button>
+            <button id="stopUserMediaBtn" type="button" class="btn btn-light">Stop user media</button>
         </div>
     </div>
     <div class="row">
@@ -32,7 +35,8 @@
     const connectBtn = document.getElementById('connectBtn')
     const joinBtn = document.getElementById('joinBtn')
     const leaveBtn = document.getElementById('leaveBtn')
-//    const getUserMediaBtn = document.getElementById('getUserMediaBtn')
+    const getUserMediaBtn = document.getElementById('getUserMediaBtn')
+    const stopUserMediaBtn = document.getElementById('stopUserMediaBtn')
     const listAgentsContainer = document.getElementById('listAgents')
 
     const params = getParams(location.search.slice(1))
@@ -55,12 +59,28 @@
     let mqttClient = null
     let signals = null
     let agentSub = null
+    let trackSub = null
+    let mediaStream = null
+    let agentList = []
+    let trackList = []
 
     function handleAgentSubscriptionEvent (event) {
         console.log('[agentSubscription:event]', event.type, event.data)
 
         listAgents().then(function (response) {
-            renderAgentList(listAgentsContainer, response)
+            agentList = response
+
+            renderAgentList()
+        })
+    }
+
+    function handleTrackSubscriptionEvent (event) {
+        console.log('[trackSubscription:event]', event.type, event.data)
+
+        listTracks().then(function (response) {
+            trackList = response
+
+            renderAgentList()
         })
     }
 
@@ -70,12 +90,23 @@
             agentSub.on('create', handleAgentSubscriptionEvent)
             agentSub.on('delete', handleAgentSubscriptionEvent)
         })
+
+        signals.subscribeTracks(ROOM_ID).then((trackSubscription) => {
+            trackSub = trackSubscription
+            trackSub.on('create', handleTrackSubscriptionEvent)
+            trackSub.on('update', handleTrackSubscriptionEvent)
+            trackSub.on('delete', handleTrackSubscriptionEvent)
+        })
     }
 
     function unbindListeners () {
         agentSub.off('create', handleAgentSubscriptionEvent)
         agentSub.off('delete', handleAgentSubscriptionEvent)
         agentSub = null
+        trackSub.off('create', handleTrackSubscriptionEvent)
+        trackSub.off('update', handleTrackSubscriptionEvent)
+        trackSub.off('delete', handleTrackSubscriptionEvent)
+        trackSub = null
     }
 
     connectBtn.addEventListener('click', function (event) {
@@ -92,8 +123,11 @@
 
             bindListeners()
 
-            listAgents().then(function (response) {
-                renderAgentList(listAgentsContainer, response)
+            Promise.all([listAgents(), listTracks()]).then(function (responseList) {
+                agentList = responseList[0]
+                trackList = responseList[1]
+
+                renderAgentList()
             })
         })
     })
@@ -108,19 +142,92 @@
 
             unbindListeners()
 
-            renderAgentList(listAgentsContainer, [])
+            agentList = []
+
+            if (mediaStream !== null) {
+                mediaStream.getTracks().forEach(function (track) {
+                    track.stop()
+                })
+                mediaStream = null
+            }
+
+            renderAgentList()
         })
     })
 
-//    getUserMediaBtn.addEventListener('click', function (event) {
-//        gum()
-//    })
+    getUserMediaBtn.addEventListener('click', function (event) {
+        gum().then(function (stream) {
+            mediaStream = stream
+
+            submitTracks(mediaStream)
+        })
+    })
+
+    stopUserMediaBtn.addEventListener('click', function (event) {
+        if (mediaStream !== null) {
+            mediaStream.getTracks().forEach(function (track) {
+                let trackId = getTrackByTrackId(track.id)
+
+                removeTrack(trackId).then((response) => {
+                    track.stop()
+                })
+            })
+
+            mediaStream = null
+        }
+    })
 
     function listAgents () {
         return signals.listAgents(`room_id:${ROOM_ID}`).then((response) => {
             console.log('[listAgents]', response)
 
             return response
+        })
+    }
+
+    function createTrack (track) {
+        return signals.createTrack(ROOM_ID, track).then((response) => {
+            console.log('[createTrack]', response)
+
+            return response
+        })
+    }
+
+    function listTracks () {
+        return signals.listTracks(`room_id:${ROOM_ID}`).then((response) => {
+            console.log('[listTracks]', response)
+
+            return response
+        })
+    }
+
+    function removeTrack (trackId) {
+        return signals.deleteTrack(ROOM_ID, trackId).then((response) => {
+            console.log('[deleteTrack]', response)
+
+            return response
+        })
+    }
+
+    function getTrackByTrackId (trackId) {
+        let tracks = trackList.filter((track) => track.data.track_id === trackId)
+
+        return tracks.length ? tracks[0].id : null
+    }
+
+    function getTracksByOwnerId (ownerId) {
+        return trackList.filter((track) => track.data.owner_id === ownerId)
+    }
+
+    function submitTracks(stream) {
+        stream.getTracks().forEach(function (track) {
+            createTrack({
+                streamId: stream.id,
+                trackId: track.id,
+                device: 'camera',
+                kind: track.kind,
+                label: track.label
+            })
         })
     }
 
@@ -178,62 +285,57 @@
         })
     }
 
-//    function gum () {
-//        const constraints = {audio: true, video: true}
-//
-//        navigator.mediaDevices.getUserMedia(constraints)
-//            .then(function(stream) {
-//                const cloneStream = stream.clone()
-//
-//                console.log('[gum] stream', stream)
-//                console.log('[gum] stream getTracks', stream.getTracks())
-//                console.log('[gum] cloneStream', cloneStream)
-//                console.log('[gum] cloneStream getTracks', cloneStream.getTracks())
-//
-//                stream.onactive = function (event) {
-//                    console.log('[stream.onactive]', event)
-//                }
-//
-//                stream.oninactive = function (event) {
-//                    console.log('[stream.oninactive]', event)
-//                }
-//
-//                cloneStream.onactive = function (event) {
-//                    console.log('[stream.onactive]', event)
-//                }
-//
-//                cloneStream.oninactive = function (event) {
-//                    console.log('[stream.oninactive]', event)
-//                }
-//
-//                setTimeout(() => {
-//                    stream.getTracks().forEach((track) => {
-//                        console.log('[gum] track', track)
-//                        track.stop()
-//                    })
-//                }, 5000)
-//            })
-//            .catch(function(err) {
-//                console.log('[gum] error', err)
-//            });
-//    }
+    function gum () {
+        const constraints = {audio: true, video: true}
 
-    function renderAgentList (target, list) {
+        return navigator.mediaDevices.getUserMedia(constraints)
+            .then(function(stream) {
+                console.log('[getUserMedia] stream', stream)
+                console.log('[getUserMedia] tracks', stream.getTracks())
+
+                return stream
+            })
+            .catch(function(error) {
+                console.log('[gum] error', error)
+            });
+    }
+
+    function renderAgentList () {
         let content = ''
 
-        list.map((item) => {
+        agentList.forEach((item) => {
             let text = item.data.label
+            let iconList = ''
+
+            getTracksByOwnerId(item.id).forEach((track) => {
+                let icon = ''
+
+                switch (track.data.kind) {
+                    case 'audio':
+                        icon = 'oi-volume-high'
+                        break
+                    case 'video':
+                        icon = 'oi-video'
+                        break
+                    default:
+                        icon = 'oi-question-mark'
+                }
+
+                iconList += `<span class="oi ${icon}" title="${track.data.label}"></span>&nbsp;`
+            })
+
+            iconList = `<span>${iconList}</span>`
 
             if (item.id === AGENT_ID) {
                 text = `<b>${text}</b>`
             }
 
-            content += `<li class="list-group-item" title="${item.id}">${text}</li>`
+            content += `<li class="list-group-item" title="${item.id}">${iconList}${text}</li>`
         })
 
         content = `<ul class="list-group">${content}</ul>`
 
-        target.innerHTML = content
+        listAgentsContainer.innerHTML = content
     }
 
     function getParams (qs) {
