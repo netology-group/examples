@@ -28,6 +28,18 @@
 
             </div>
         </div>
+        <div class="col-sm-3">
+            <h2>Current agent</h2>
+            <div>
+                <video id="currentAgent" width="100%" autoplay muted></video>
+            </div>
+        </div>
+        <div class="col-sm-3">
+            <h2>Remote agent</h2>
+            <div>
+                <video id="remoteAgent" width="100%" autoplay></video>
+            </div>
+        </div>
     </div>
 </div>
 
@@ -46,6 +58,9 @@
     const AGENT_ID = params.agent_id
     const ROOM_ID = params.room_id
     const APP_NAME = params.app_name
+    const TURN_URL = params.turn_url
+    const TURN_USERNAME = params.turn_username
+    const TURN_CREDENTIAL = params.turn_credential
     const OPTIONS = {
         username: `user-${ACCOUNT_ID}`,
         password: `password-${ACCOUNT_ID}`,
@@ -60,9 +75,14 @@
     let signals = null
     let agentSub = null
     let trackSub = null
+    let signalingSub = null
     let mediaStream = null
     let agentList = []
     let trackList = []
+    let selectedTrackMap = {}
+    let peerConnection = null
+    let callerAgentId = null
+    let calleeAgentId = null
 
     function handleAgentSubscriptionEvent (event) {
         console.log('[agentSubscription:event]', event.type, event.data)
@@ -72,6 +92,17 @@
 
             renderAgentList()
         })
+
+        switch (event.type) {
+            case 'delete':
+                if (isOnCall() && (callerAgentId === event.data.id || calleeAgentId === event.data.id)) {
+                    closeCall()
+                }
+
+                break
+        }
+
+        renderAgentList()
     }
 
     function handleTrackSubscriptionEvent (event) {
@@ -82,6 +113,73 @@
 
             renderAgentList()
         })
+    }
+
+    function handleSignalingSubscriptionEvent (event) {
+        console.log('[signalingSubscription:event]', event.type, event.data)
+        let desc
+
+        switch (event.type) {
+            case 'offer':
+                callerAgentId = event.data.data.from
+                calleeAgentId = AGENT_ID
+                let tracks = event.data.data.tracks.map(track => getTrackById(track.id))
+
+                if (peerConnection === null) {
+                    createPeerConnection()
+                }
+
+                if (mediaStream && mediaStream.getTracks().length > 0) {
+                    const senders = peerConnection.getSenders().filter(s => s.track !== null)
+
+                    const tracksNativeIdList = tracks.map(t => t.data.track_id)
+                    const tracksInPeerConnection = senders.map(s => s.track.id)
+                    const senderListForRemoving = senders.filter(s => tracksNativeIdList.indexOf(s.track.id) === -1)
+                    const trackListForAdding = tracksNativeIdList.filter(tId => tracksInPeerConnection.indexOf(tId) === -1)
+
+                    senderListForRemoving.forEach(sender => {
+                        peerConnection.removeTrack(sender)
+                    })
+
+                    trackListForAdding.forEach(trackId => {
+                        peerConnection.addTrack(mediaStream.getTrackById(trackId), mediaStream)
+                    })
+                }
+
+                desc = new RTCSessionDescription(event.data.data.jsep)
+
+                peerConnection.setRemoteDescription(desc)
+                    .then(function() {
+                        return peerConnection.createAnswer()
+                    })
+                    .then(function(answer) {
+                        return peerConnection.setLocalDescription(answer)
+                    })
+                    .then(function() {
+                        const answer = peerConnection.localDescription
+
+                        sendAnswer(callerAgentId, answer)
+                    })
+                    .catch(reportError)
+
+                renderAgentList()
+
+                break
+            case 'answer':
+                desc = new RTCSessionDescription(event.data.data.jsep);
+
+                peerConnection.setRemoteDescription(desc).catch(reportError);
+
+                break
+            case 'candidate':
+                let candidate = new RTCIceCandidate(event.data.data.candidate)
+
+                peerConnection.addIceCandidate(candidate).catch(reportError)
+
+                break
+            default:
+                console.log('Unknown signaling event', event.type)
+        }
     }
 
     function bindListeners () {
@@ -97,6 +195,13 @@
             trackSub.on('update', handleTrackSubscriptionEvent)
             trackSub.on('delete', handleTrackSubscriptionEvent)
         })
+
+        signals.subscribeSignaling().then((signalingSubscription) => {
+            signalingSub = signalingSubscription
+            signalingSub.on('offer', handleSignalingSubscriptionEvent)
+            signalingSub.on('answer', handleSignalingSubscriptionEvent)
+            signalingSub.on('candidate', handleSignalingSubscriptionEvent)
+        })
     }
 
     function unbindListeners () {
@@ -107,6 +212,10 @@
         trackSub.off('update', handleTrackSubscriptionEvent)
         trackSub.off('delete', handleTrackSubscriptionEvent)
         trackSub = null
+        signalingSub.off('offer', handleSignalingSubscriptionEvent)
+        signalingSub.off('answer', handleSignalingSubscriptionEvent)
+        signalingSub.off('candidate', handleSignalingSubscriptionEvent)
+        signalingSub = null
     }
 
     connectBtn.addEventListener('click', function (event) {
@@ -129,11 +238,19 @@
 
                 renderAgentList()
             })
+        }).catch((error) => {
+            console.error('[joinRoom error]', error)
+
+            joinBtn.disabled = false
         })
     })
 
     leaveBtn.addEventListener('click', function (event) {
         leaveBtn.disabled = true
+
+        if (isOnCall()) {
+            closeCall()
+        }
 
         leaveRoom(ROOM_ID, AGENT_ID).then(function () {
             joinBtn.disabled = false
@@ -159,6 +276,8 @@
         gum().then(function (stream) {
             mediaStream = stream
 
+            document.getElementById('currentAgent').srcObject = mediaStream
+
             submitTracks(mediaStream)
         })
     })
@@ -166,14 +285,16 @@
     stopUserMediaBtn.addEventListener('click', function (event) {
         if (mediaStream !== null) {
             mediaStream.getTracks().forEach(function (track) {
-                let trackId = getTrackByTrackId(track.id)
+                let trackItem = getTrackByTrackId(track.id)
 
-                removeTrack(trackId).then((response) => {
+                removeTrack(trackItem.id).then((response) => {
                     track.stop()
                 })
             })
 
             mediaStream = null
+
+            document.getElementById('currentAgent').srcObject = null
         }
     })
 
@@ -201,6 +322,22 @@
         })
     }
 
+    function registerTrack (data) {
+        return signals.registerTrack(ROOM_ID, data).then((response) => {
+            console.log('[registerTrack]', response)
+
+            return response
+        })
+    }
+
+    function unregisterTrack (data) {
+        return signals.unregisterTrack(ROOM_ID, data).then((response) => {
+            console.log('[unregisterTrack]', response)
+
+            return response
+        })
+    }
+
     function removeTrack (trackId) {
         return signals.deleteTrack(ROOM_ID, trackId).then((response) => {
             console.log('[deleteTrack]', response)
@@ -209,14 +346,24 @@
         })
     }
 
+    function getTrackById (id) {
+        let tracks = trackList.filter((track) => track.id === id)
+
+        return tracks.length ? tracks[0] : null
+    }
+
     function getTrackByTrackId (trackId) {
         let tracks = trackList.filter((track) => track.data.track_id === trackId)
 
-        return tracks.length ? tracks[0].id : null
+        return tracks.length ? tracks[0] : null
     }
 
     function getTracksByOwnerId (ownerId) {
-        return trackList.filter((track) => track.data.owner_id === ownerId)
+        return trackList.filter(track => track.data.owner_id === ownerId)
+    }
+
+    function getTracksByHolderId (holderId) {
+        return trackList.filter(track => track.data.holders.map(holder => holder.id).indexOf(holderId) !== -1)
     }
 
     function submitTracks(stream) {
@@ -272,6 +419,8 @@
             return response
         }).catch((error) => {
             console.log('[createAgent error]', error)
+
+            throw new Error(error.message)
         })
     }
 
@@ -285,16 +434,163 @@
         })
     }
 
+    function sendOffer (agentId, offer, tracks) {
+        return signals.sendOffer(ROOM_ID, agentId, offer, tracks).then(function (response) {
+            console.log('[response] signals.sendOffer', response)
+
+            return response
+        }).catch((error) => {
+            console.log('[sendOffer error]', error)
+        })
+    }
+
+    function sendAnswer (agentId, answer) {
+        return signals.sendAnswer(ROOM_ID, agentId, answer).then(function (response) {
+            console.log('[response] signals.sendAnswer', response)
+
+            return response
+        }).catch((error) => {
+            console.log('[sendAnswer error]', error)
+        })
+    }
+
+    function sendCandidate (agentId, candidate) {
+        return signals.sendCandidate(ROOM_ID, agentId, candidate).then(function (response) {
+            console.log('[response] signals.sendCandidate', response)
+
+            return response
+        }).catch((error) => {
+            console.log('[sendCandidate error]', error)
+        })
+    }
+
+    function makeCall (btn) {
+        callerAgentId = AGENT_ID
+        calleeAgentId = btn.getAttribute('data-agent-id')
+
+        createPeerConnection()
+
+        peerConnection.createOffer({
+            offerToReceiveVideo: true,
+            offerToReceiveAudio: true
+        })
+            .then(function(offer) {
+                return peerConnection.setLocalDescription(offer)
+            })
+            .then(function() {
+                const offer = peerConnection.localDescription
+                const tracks = []
+
+                sendOffer(calleeAgentId, offer, tracks)
+            })
+            .catch(reportError)
+
+        renderAgentList()
+    }
+
+    function closeCall () {
+        let remoteVideo = document.getElementById('remoteAgent')
+//        let localVideo = document.getElementById('currentAgent')
+
+        remoteVideo.srcObject = null
+
+        closePeerConnection()
+
+        callerAgentId = null
+        calleeAgentId = null
+
+        selectedTrackMap = {}
+
+        renderAgentList()
+    }
+
+    function isOnCall () {
+        return peerConnection !== null
+    }
+
+    function toggleTrack (trackIcon) {
+        const agentId = trackIcon.getAttribute('data-agent-id')
+        const trackId = trackIcon.getAttribute('data-track-id')
+
+        if (!isOnCall()) {
+            console.warn('Call don\'t exist.')
+            return
+        }
+
+        if (callerAgentId !== AGENT_ID) {
+            console.warn('You are callee, you can\'t add track on this call.')
+            return
+        }
+
+        if (!selectedTrackMap[agentId]) {
+            selectedTrackMap[agentId] = []
+        }
+
+        if (selectedTrackMap[agentId].indexOf(trackId) === -1) {
+            selectedTrackMap[agentId].push(trackId)
+
+            if (agentId === callerAgentId) {
+                addLocalTrackToPeerConnection(trackId)
+            } else {
+                updateRemoteTracksForPeerConnection()
+            }
+        } else {
+            selectedTrackMap[agentId].splice(selectedTrackMap[agentId].indexOf(trackId), 1)
+
+            if (agentId === callerAgentId) {
+                removeLocalTrackFromPeerConnection(trackId)
+            } else {
+                updateRemoteTracksForPeerConnection()
+            }
+        }
+
+        renderAgentList()
+    }
+
+    function addLocalTrackToPeerConnection (trackId) {
+        const track = getTrackById(trackId)
+        const trackInStream = mediaStream.getTrackById(track.data.track_id)
+        const tracks = selectedTrackMap[calleeAgentId] ? selectedTrackMap[calleeAgentId].map(t => ({id: t})) : []
+
+        peerConnection.addTrack(trackInStream, mediaStream)
+
+        createAndSendOffer(calleeAgentId, tracks)
+    }
+
+    function removeLocalTrackFromPeerConnection (trackId) {
+        const track = getTrackById(trackId)
+        const trackInStream = mediaStream.getTrackById(track.data.track_id)
+        const sender = peerConnection.getSenders().filter(sender => sender.track.id === trackInStream.id)[0]
+        const tracks = selectedTrackMap[calleeAgentId] ? selectedTrackMap[calleeAgentId].map(t => ({id: t})) : []
+
+        peerConnection.removeTrack(sender)
+
+        createAndSendOffer(calleeAgentId, tracks)
+    }
+
+    function updateRemoteTracksForPeerConnection () {
+        const tracks = selectedTrackMap[calleeAgentId].map(t => ({id: t}))
+
+        createAndSendOffer(calleeAgentId, tracks)
+    }
+
+    function createAndSendOffer (target, tracks) {
+        peerConnection.createOffer()
+            .then(function(offer) {
+                return peerConnection.setLocalDescription(offer)
+            })
+            .then(function() {
+                const offer = peerConnection.localDescription
+
+                sendOffer(target, offer, tracks)
+            })
+            .catch(reportError)
+    }
+
     function gum () {
         const constraints = {audio: true, video: true}
 
         return navigator.mediaDevices.getUserMedia(constraints)
-            .then(function(stream) {
-                console.log('[getUserMedia] stream', stream)
-                console.log('[getUserMedia] tracks', stream.getTracks())
-
-                return stream
-            })
             .catch(function(error) {
                 console.log('[gum] error', error)
             });
@@ -304,33 +600,95 @@
         let content = ''
 
         agentList.forEach((item) => {
+            let makeCallBtn = ''
+            let endCallBtn = ''
             let text = item.data.label
-            let iconList = ''
+            let ownerIconList = ''
+            let holderIconList = ''
+            let callStatusBadge = ''
+            let ownedTracks = getTracksByOwnerId(item.id)
+            let holdedTracks = getTracksByHolderId(item.id)
 
-            getTracksByOwnerId(item.id).forEach((track) => {
+            ownedTracks.forEach((track) => {
+                let icon = ''
+                let selected = ''
+
+                switch (track.data.kind) {
+                    case 'audio':
+                        icon = 'oi oi-microphone'
+                        break
+                    case 'video':
+                        icon = 'oi oi-video'
+                        break
+                    default:
+                        icon = 'oi oi-question-mark'
+                }
+
+                if (selectedTrackMap[item.id] && selectedTrackMap[item.id].length && selectedTrackMap[item.id].indexOf(track.id) !== -1) {
+                    selected = ' text-primary'
+                }
+
+                ownerIconList += `<span
+                                class="${icon}${selected}"
+                                title="${track.data.label}"
+                                data-agent-id="${item.id}"
+                                data-track-id="${track.id}"
+                                onclick="toggleTrack(this);"
+                            ></span>&nbsp;`
+            })
+
+            holdedTracks.forEach((track) => {
                 let icon = ''
 
                 switch (track.data.kind) {
                     case 'audio':
-                        icon = 'oi-volume-high'
+                        icon = 'oi oi-microphone'
                         break
                     case 'video':
-                        icon = 'oi-video'
+                        icon = 'oi oi-video'
                         break
                     default:
-                        icon = 'oi-question-mark'
+                        icon = 'oi oi-question-mark'
                 }
 
-                iconList += `<span class="oi ${icon}" title="${track.data.label}"></span>&nbsp;`
+                holderIconList += `<span
+                                class="${icon} text-secondary"
+                                title="${track.data.label}"
+                                data-agent-id="${track.id}"
+                                data-track-id="${item.id}"
+                            ></span>&nbsp;`
             })
 
-            iconList = `<span>${iconList}</span>`
+            ownerIconList = `<span>${ownerIconList}</span>`
+            holderIconList = `<span>${holderIconList}</span>`
 
             if (item.id === AGENT_ID) {
                 text = `<b>${text}</b>`
             }
 
-            content += `<li class="list-group-item" title="${item.id}">${iconList}${text}</li>`
+            if (isOnCall()) {
+                callStatusBadge = `&nbsp;<span class="badge badge-secondary">${item.id === callerAgentId ? 'Caller' : 'Callee'}</span>`
+            }
+
+            if (item.id !== AGENT_ID && !isOnCall()) {
+                makeCallBtn = `<button
+                            type="button"
+                            class="btn btn-outline-primary btn-sm float-right"
+                            data-agent-id="${item.id}"
+                            onclick="makeCall(this);"
+                        >Call</button>`
+            }
+
+            if (item.id !== AGENT_ID && isOnCall() && item.id === calleeAgentId) {
+                endCallBtn = `<button
+                            type="button"
+                            class="btn btn-outline-danger btn-sm float-right"
+                            data-agent-id="${item.id}"
+                            onclick="closeCall(this);"
+                        >End call</button>`
+            }
+
+            content += `<li class="list-group-item" title="${item.id}">${ownerIconList}${holderIconList}${text}${callStatusBadge}${makeCallBtn}${endCallBtn}</li>`
         })
 
         content = `<ul class="list-group">${content}</ul>`
@@ -347,6 +705,132 @@
         })
 
         return params
+    }
+
+
+    // peer connection
+
+    function createPeerConnection () {
+        console.log('[createPeerConnection]')
+
+        peerConnection = new RTCPeerConnection({
+            iceServers: [
+                {
+                    urls: TURN_URL,
+                    username: TURN_USERNAME,
+                    credential: TURN_CREDENTIAL
+                }
+            ]
+        })
+
+//        peerConnection.onconnectionstatechange = handleConnectionStateChangeEvent
+//        peerConnection.onnegotiationneeded = handleNegotiationNeededEvent
+        peerConnection.onicecandidate = handleICECandidateEvent
+        peerConnection.onremovestream = handleRemoveStreamEvent
+        peerConnection.oniceconnectionstatechange = handleICEConnectionStateChangeEvent
+        peerConnection.onicegatheringstatechange = handleICEGatheringStateChangeEvent
+        peerConnection.onsignalingstatechange = handleSignalingStateChangeEvent
+        peerConnection.ontrack = handleTrackEvent
+    }
+
+    function closePeerConnection () {
+        console.log('[closePeerConnection]')
+
+//        peerConnection.onconnectionstatechange = null
+//        peerConnection.onnegotiationneeded = null
+        peerConnection.onicecandidate = null
+        peerConnection.onremovestream = null
+        peerConnection.oniceconnectionstatechange = null
+        peerConnection.onicegatheringstatechange = null
+        peerConnection.onsignalingstatechange = null
+        peerConnection.ontrack = null
+
+        peerConnection.close()
+        peerConnection = null
+    }
+
+    function handleConnectionStateChangeEvent (event) {
+        console.log('[handleConnectionStateChangeEvent]', event)
+    }
+
+    function handleNegotiationNeededEvent() {
+        console.log('[handleNegotiationNeededEvent]')
+
+        peerConnection.createOffer()
+            .then(function(offer) {
+                return peerConnection.setLocalDescription(offer)
+            })
+            .then(function() {
+                const offer = peerConnection.localDescription
+
+                sendOffer(calleeAgentId, offer, [])
+            })
+            .catch(reportError)
+    }
+
+    function handleTrackEvent(event) {
+        console.log('[handleTrackEvent]', event)
+
+        const trackData = {
+            streamId: event.streams[0].id,
+            trackId: event.track.id
+        }
+
+        event.track.onended = function (event) {
+            console.log('[track] onended', event)
+
+            unregisterTrack(trackData)
+        }
+
+        document.getElementById('remoteAgent').srcObject = event.streams[0]
+
+        registerTrack(trackData)
+    }
+
+    function handleICECandidateEvent(event) {
+        if (event.candidate) {
+            console.debug('[ICE] Outgoing ICE candidate: ' + event.candidate.candidate)
+            const target = calleeAgentId === AGENT_ID ? callerAgentId : calleeAgentId
+
+            sendCandidate(target, event.candidate)
+        }
+    }
+
+    function handleRemoveStreamEvent(event) {
+        console.log('Stream removed')
+//        closeCall()
+    }
+
+    function handleICEConnectionStateChangeEvent(event) {
+        console.log('[ICE] connection state changed to: ' + event.target.iceConnectionState)
+
+        switch(event.target.iceConnectionState) {
+            case 'closed':
+            case 'failed':
+//            case 'disconnected':
+                closeCall()
+
+                break
+        }
+    }
+
+    function handleICEGatheringStateChangeEvent(event) {
+        console.debug('ICE gathering state changed to: ' + peerConnection.iceGatheringState)
+    }
+
+    function handleSignalingStateChangeEvent(event) {
+        console.info('[WebRTC] signaling state changed to: ' + peerConnection.signalingState)
+
+        switch(event.target.signalingState) {
+            case 'closed':
+                closeCall()
+
+                break
+        }
+    }
+    
+    function reportError (error) {
+        console.error('[Error]', error.name, error.message)
     }
 </script>
 
