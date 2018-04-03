@@ -17,8 +17,9 @@
             <button id="connectBtn" type="button" class="btn btn-light">Connect</button>
             <button id="joinBtn" type="button" class="btn btn-success">Join room</button>
             <button id="leaveBtn" type="button" class="btn btn-danger" hidden disabled>Leave room</button>
-            <button id="getUserMediaBtn" type="button" class="btn btn-light">Get user media</button>
-            <button id="stopUserMediaBtn" type="button" class="btn btn-light">Stop user media</button>
+            <button id="getUserMediaBtn" type="button" class="btn btn-outline-success btn-sm">Get user media</button>
+            <!--<button id="getScreenMediaBtn" type="button" class="btn btn-outline-success btn-sm" hidden>Get screen media</button>-->
+            <button id="stopUserMediaBtn" type="button" class="btn btn-outline-danger btn-sm">Stop user media</button>
         </div>
     </div>
     <div class="row">
@@ -33,6 +34,9 @@
             <div>
                 <video id="currentAgent" width="100%" autoplay muted></video>
             </div>
+            <!--<div>-->
+                <!--<video id="currentAgentScreen" width="100%" autoplay muted></video>-->
+            <!--</div>-->
         </div>
         <div class="col-sm-3">
             <h2>Remote agent</h2>
@@ -48,6 +52,7 @@
     const joinBtn = document.getElementById('joinBtn')
     const leaveBtn = document.getElementById('leaveBtn')
     const getUserMediaBtn = document.getElementById('getUserMediaBtn')
+//    const getScreenMediaBtn = document.getElementById('getScreenMediaBtn')
     const stopUserMediaBtn = document.getElementById('stopUserMediaBtn')
     const listAgentsContainer = document.getElementById('listAgents')
 
@@ -84,8 +89,24 @@
     let callerAgentId = null
     let calleeAgentId = null
 
+//    if (checkScreenShareSupport()) {
+//        getScreenMediaBtn.hidden = false
+//    }
+
+    function checkScreenShareSupport() {
+        let result = false
+
+        if (window.navigator.mediaDevices && window.navigator.mediaDevices.getSupportedConstraints) {
+            result = navigator.mediaDevices.getSupportedConstraints()['mediaSource'] === true
+        }
+
+        return result
+    }
+
     function handleAgentSubscriptionEvent (event) {
         console.log('[agentSubscription:event]', event.type, event.data)
+
+        const agentId = event.data.id
 
         listAgents().then(function (response) {
             agentList = response
@@ -95,7 +116,7 @@
 
         switch (event.type) {
             case 'delete':
-                if (isOnCall() && (callerAgentId === event.data.id || calleeAgentId === event.data.id)) {
+                if (isOnCall() && (callerAgentId === agentId || calleeAgentId === agentId)) {
                     closeCall()
                 }
 
@@ -132,7 +153,7 @@
                 if (mediaStream && mediaStream.getTracks().length > 0) {
                     const senders = peerConnection.getSenders().filter(s => s.track !== null)
 
-                    const tracksNativeIdList = tracks.map(t => t.data.track_id)
+                    const tracksNativeIdList = tracks.map(t => t.data.metadata.trackId)
                     const tracksInPeerConnection = senders.map(s => s.track.id)
                     const senderListForRemoving = senders.filter(s => tracksNativeIdList.indexOf(s.track.id) === -1)
                     const trackListForAdding = tracksNativeIdList.filter(tId => tracksInPeerConnection.indexOf(tId) === -1)
@@ -192,7 +213,6 @@
         signals.subscribeTracks(ROOM_ID).then((trackSubscription) => {
             trackSub = trackSubscription
             trackSub.on('create', handleTrackSubscriptionEvent)
-            trackSub.on('update', handleTrackSubscriptionEvent)
             trackSub.on('delete', handleTrackSubscriptionEvent)
         })
 
@@ -208,10 +228,11 @@
         agentSub.off('create', handleAgentSubscriptionEvent)
         agentSub.off('delete', handleAgentSubscriptionEvent)
         agentSub = null
+
         trackSub.off('create', handleTrackSubscriptionEvent)
-        trackSub.off('update', handleTrackSubscriptionEvent)
         trackSub.off('delete', handleTrackSubscriptionEvent)
         trackSub = null
+
         signalingSub.off('offer', handleSignalingSubscriptionEvent)
         signalingSub.off('answer', handleSignalingSubscriptionEvent)
         signalingSub.off('candidate', handleSignalingSubscriptionEvent)
@@ -273,21 +294,31 @@
     })
 
     getUserMediaBtn.addEventListener('click', function (event) {
-        gum().then(function (stream) {
-            mediaStream = stream
+        const constraints = {audio: true, video: {width: 320, height: 240}}
 
-            document.getElementById('currentAgent').srcObject = mediaStream
+        gum(constraints).then(function (stream) {
+            processStream(stream)
 
-            submitTracks(mediaStream)
+            document.getElementById('currentAgent').srcObject = stream
         })
     })
+
+//    getScreenMediaBtn.addEventListener('click', function (event) {
+//        const constraints = {video: {mediaSource: 'screen'}}
+//
+//        gum(constraints).then(function (stream) {
+//            processStream(stream)
+//
+//            document.getElementById('currentAgentScreen').srcObject = stream
+//        })
+//    })
 
     stopUserMediaBtn.addEventListener('click', function (event) {
         if (mediaStream !== null) {
             mediaStream.getTracks().forEach(function (track) {
                 let trackItem = getTrackByTrackId(track.id)
 
-                removeTrack(trackItem.id).then((response) => {
+                removeTrack(trackItem.id).then(() => {
                     track.stop()
                 })
             })
@@ -295,6 +326,7 @@
             mediaStream = null
 
             document.getElementById('currentAgent').srcObject = null
+//            document.getElementById('currentAgentScreen').srcObject = null
         }
     })
 
@@ -322,22 +354,6 @@
         })
     }
 
-    function registerTrack (data) {
-        return signals.registerTrack(ROOM_ID, data).then((response) => {
-            console.log('[registerTrack]', response)
-
-            return response
-        })
-    }
-
-    function unregisterTrack (data) {
-        return signals.unregisterTrack(ROOM_ID, data).then((response) => {
-            console.log('[unregisterTrack]', response)
-
-            return response
-        })
-    }
-
     function removeTrack (trackId) {
         return signals.deleteTrack(ROOM_ID, trackId).then((response) => {
             console.log('[deleteTrack]', response)
@@ -353,27 +369,39 @@
     }
 
     function getTrackByTrackId (trackId) {
-        let tracks = trackList.filter((track) => track.data.track_id === trackId)
+        let tracks = trackList.filter((track) => track.data.metadata.trackId === trackId)
 
         return tracks.length ? tracks[0] : null
     }
 
-    function getTracksByOwnerId (ownerId) {
-        return trackList.filter(track => track.data.owner_id === ownerId)
+    function getLocalTrackByTrackId (trackId) {
+        let tracks = trackList.filter((track) => track.data.owner_id === AGENT_ID && track.data.metadata.trackId === trackId)
+
+        return tracks.length ? tracks[0] : null
     }
 
-    function getTracksByHolderId (holderId) {
-        return trackList.filter(track => track.data.holders.map(holder => holder.id).indexOf(holderId) !== -1)
-    }
+    function processStream(stream, options) {
+        if (mediaStream === null) {
+            mediaStream = new MediaStream()
+        }
 
-    function submitTracks(stream) {
-        stream.getTracks().forEach(function (track) {
+        stream.getTracks().forEach(track => {
+            mediaStream.addTrack(track)
+
             createTrack({
-                streamId: stream.id,
+                sourceId: AGENT_ID,
+                streamId: mediaStream.id,
                 trackId: track.id,
-                device: 'camera',
                 kind: track.kind,
                 label: track.label
+            }).then(function () {
+                track.onended = function (event) {
+                    const trackItem = getTrackByTrackId(track.id)
+
+                    removeTrack(trackItem.id).then(function () {
+                        track.stop()
+                    })
+                }
             })
         })
     }
@@ -549,7 +577,7 @@
 
     function addLocalTrackToPeerConnection (trackId) {
         const track = getTrackById(trackId)
-        const trackInStream = mediaStream.getTrackById(track.data.track_id)
+        const trackInStream = mediaStream.getTrackById(track.data.metadata.trackId)
         const tracks = selectedTrackMap[calleeAgentId] ? selectedTrackMap[calleeAgentId].map(t => ({id: t})) : []
 
         peerConnection.addTrack(trackInStream, mediaStream)
@@ -559,8 +587,8 @@
 
     function removeLocalTrackFromPeerConnection (trackId) {
         const track = getTrackById(trackId)
-        const trackInStream = mediaStream.getTrackById(track.data.track_id)
-        const sender = peerConnection.getSenders().filter(sender => sender.track.id === trackInStream.id)[0]
+        const trackInStream = mediaStream.getTrackById(track.data.metadata.trackId)
+        const sender = peerConnection.getSenders().filter(s => s.track !== null).filter(sender => sender.track.id === trackInStream.id)[0]
         const tracks = selectedTrackMap[calleeAgentId] ? selectedTrackMap[calleeAgentId].map(t => ({id: t})) : []
 
         peerConnection.removeTrack(sender)
@@ -587,12 +615,12 @@
             .catch(reportError)
     }
 
-    function gum () {
-        const constraints = {audio: true, video: true}
-
+    function gum (constraints) {
         return navigator.mediaDevices.getUserMedia(constraints)
             .catch(function(error) {
                 console.log('[gum] error', error)
+
+                throw error
             });
     }
 
@@ -606,14 +634,15 @@
             let ownerIconList = ''
             let holderIconList = ''
             let callStatusBadge = ''
-            let ownedTracks = getTracksByOwnerId(item.id)
-            let holdedTracks = getTracksByHolderId(item.id)
+            let ownedTracks = trackList.filter(track => track.data.owner_id === item.id && track.data.metadata.sourceId === item.id)
+            let holdedTracks = trackList.filter(track => track.data.owner_id === item.id && track.data.metadata.sourceId !== item.id)
 
             ownedTracks.forEach((track) => {
+                const trackMeta = track.data.metadata
                 let icon = ''
                 let selected = ''
 
-                switch (track.data.kind) {
+                switch (trackMeta.kind) {
                     case 'audio':
                         icon = 'oi oi-microphone'
                         break
@@ -624,13 +653,17 @@
                         icon = 'oi oi-question-mark'
                 }
 
-                if (selectedTrackMap[item.id] && selectedTrackMap[item.id].length && selectedTrackMap[item.id].indexOf(track.id) !== -1) {
+                if (
+                    selectedTrackMap[item.id] &&
+                    selectedTrackMap[item.id].length &&
+                    selectedTrackMap[item.id].indexOf(track.id) !== -1
+                ) {
                     selected = ' text-primary'
                 }
 
                 ownerIconList += `<span
                                 class="${icon}${selected}"
-                                title="${track.data.label}"
+                                title="${trackMeta.label}"
                                 data-agent-id="${item.id}"
                                 data-track-id="${track.id}"
                                 onclick="toggleTrack(this);"
@@ -638,9 +671,10 @@
             })
 
             holdedTracks.forEach((track) => {
+                const trackMeta = track.data.metadata
                 let icon = ''
 
-                switch (track.data.kind) {
+                switch (trackMeta.kind) {
                     case 'audio':
                         icon = 'oi oi-microphone'
                         break
@@ -653,7 +687,7 @@
 
                 holderIconList += `<span
                                 class="${icon} text-secondary"
-                                title="${track.data.label}"
+                                title="${trackMeta.label}"
                                 data-agent-id="${track.id}"
                                 data-track-id="${item.id}"
                             ></span>&nbsp;`
@@ -667,7 +701,9 @@
             }
 
             if (isOnCall()) {
-                callStatusBadge = `&nbsp;<span class="badge badge-secondary">${item.id === callerAgentId ? 'Caller' : 'Callee'}</span>`
+                callStatusBadge = `&nbsp;<span class="badge badge-secondary">
+                        ${item.id === callerAgentId ? 'Caller' : 'Callee'}
+                    </span>`
             }
 
             if (item.id !== AGENT_ID && !isOnCall()) {
@@ -688,7 +724,14 @@
                         >End call</button>`
             }
 
-            content += `<li class="list-group-item" title="${item.id}">${ownerIconList}${holderIconList}${text}${callStatusBadge}${makeCallBtn}${endCallBtn}</li>`
+            content += `<li class="list-group-item" title="${item.id}">
+                    ${ownerIconList}
+                    ${holderIconList}
+                    ${text}
+                    ${callStatusBadge}
+                    ${makeCallBtn}
+                    ${endCallBtn}
+                </li>`
         })
 
         content = `<ul class="list-group">${content}</ul>`
@@ -707,6 +750,10 @@
         return params
     }
 
+//    function listRooms () {
+//        mqttClient.publish(`agents/${AGENT_ID}/out/${APP_NAME}/api/v1`, '{"jsonrpc":"2.0","method":"room.list","params":[],"id":"qwerty"}')
+//    }
+
 
     // peer connection
 
@@ -715,6 +762,7 @@
 
         peerConnection = new RTCPeerConnection({
             iceServers: [
+                {urls: 'stun:stun.l.google.com:19302'},
                 {
                     urls: TURN_URL,
                     username: TURN_USERNAME,
@@ -749,42 +797,62 @@
         peerConnection = null
     }
 
-    function handleConnectionStateChangeEvent (event) {
-        console.log('[handleConnectionStateChangeEvent]', event)
-    }
+//    function handleConnectionStateChangeEvent (event) {
+//        console.log('[handleConnectionStateChangeEvent]', event)
+//    }
 
-    function handleNegotiationNeededEvent() {
-        console.log('[handleNegotiationNeededEvent]')
-
-        peerConnection.createOffer()
-            .then(function(offer) {
-                return peerConnection.setLocalDescription(offer)
-            })
-            .then(function() {
-                const offer = peerConnection.localDescription
-
-                sendOffer(calleeAgentId, offer, [])
-            })
-            .catch(reportError)
-    }
+//    function handleNegotiationNeededEvent() {
+//        console.log('[handleNegotiationNeededEvent]')
+//
+//        peerConnection.createOffer()
+//            .then(function(offer) {
+//                return peerConnection.setLocalDescription(offer)
+//            })
+//            .then(function() {
+//                const offer = peerConnection.localDescription
+//
+//                sendOffer(calleeAgentId, offer, [])
+//            })
+//            .catch(reportError)
+//    }
 
     function handleTrackEvent(event) {
         console.log('[handleTrackEvent]', event)
 
         const trackData = {
+            sourceId: callerAgentId === AGENT_ID ? calleeAgentId : callerAgentId,
             streamId: event.streams[0].id,
-            trackId: event.track.id
+            trackId: event.track.id,
+            device: null,
+            kind: event.track.kind,
+            label: event.track.label
         }
 
         event.track.onended = function (event) {
             console.log('[track] onended', event)
 
-            unregisterTrack(trackData)
+            const trackItem = getLocalTrackByTrackId(event.target.id)
+
+            if (trackItem) {
+                removeTrack(trackItem.id)
+            }
+        }
+
+        event.streams[0].onremovetrack = function (event) {
+            console.log('[stream] onremovetrack', event)
+        }
+
+        event.track.onmute = function (event) {
+            console.log('[track] onmute', event)
+        }
+
+        event.track.onunmute = function (event) {
+            console.log('[track] onunmute', event)
         }
 
         document.getElementById('remoteAgent').srcObject = event.streams[0]
 
-        registerTrack(trackData)
+        createTrack(trackData)
     }
 
     function handleICECandidateEvent(event) {
