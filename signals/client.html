@@ -72,7 +72,7 @@
         clientId: `${AGENT_ID}.${ACCOUNT_ID}`,
         will: {
             topic: `agents/${AGENT_ID}/out/${APP_NAME}/api/v1`,
-            payload: `{"jsonrpc":"2.0","method":"agent.delete","params":[{"room_id":"${ROOM_ID}","id":"${AGENT_ID}"}],"id":"${AGENT_ID}"}`
+            payload: `{"jsonrpc":"2.0","method":"agent.delete","params":[{"id":"${AGENT_ID}"}],"id":"${AGENT_ID}"}`
         }
     }
 
@@ -115,7 +115,7 @@
         })
 
         switch (event.type) {
-            case 'delete':
+            case 'leave_room':
                 if (isOnCall() && (callerAgentId === agentId || calleeAgentId === agentId)) {
                     closeCall()
                 }
@@ -206,8 +206,8 @@
     function bindListeners () {
         signals.subscribeAgents(ROOM_ID).then((agentSubscription) => {
             agentSub = agentSubscription
-            agentSub.on('create', handleAgentSubscriptionEvent)
-            agentSub.on('delete', handleAgentSubscriptionEvent)
+            agentSub.on('join_room', handleAgentSubscriptionEvent)
+            agentSub.on('leave_room', handleAgentSubscriptionEvent)
         })
 
         signals.subscribeTracks(ROOM_ID).then((trackSubscription) => {
@@ -225,17 +225,20 @@
     }
 
     function unbindListeners () {
-        agentSub.off('create', handleAgentSubscriptionEvent)
-        agentSub.off('delete', handleAgentSubscriptionEvent)
+        agentSub.off('join_room', handleAgentSubscriptionEvent)
+        agentSub.off('leave_room', handleAgentSubscriptionEvent)
+        agentSub.destroy()
         agentSub = null
 
         trackSub.off('create', handleTrackSubscriptionEvent)
         trackSub.off('delete', handleTrackSubscriptionEvent)
+        trackSub.destroy()
         trackSub = null
 
         signalingSub.off('offer', handleSignalingSubscriptionEvent)
         signalingSub.off('answer', handleSignalingSubscriptionEvent)
         signalingSub.off('candidate', handleSignalingSubscriptionEvent)
+        signalingSub.destroy()
         signalingSub = null
     }
 
@@ -273,12 +276,12 @@
             closeCall()
         }
 
+        unbindListeners()
+
         leaveRoom(ROOM_ID, AGENT_ID).then(function () {
             joinBtn.disabled = false
             joinBtn.hidden = false
             leaveBtn.hidden = true
-
-            unbindListeners()
 
             agentList = []
 
@@ -339,8 +342,8 @@
     }
 
     function createTrack (track) {
-        return signals.createTrack(ROOM_ID, track).then((response) => {
-            console.log('[createTrack]', response)
+        return signals.createTrack(track).then((response) => {
+            console.log('[response] signals.createTrack', response)
 
             return response
         })
@@ -348,15 +351,15 @@
 
     function listTracks () {
         return signals.listTracks(`room_id:${ROOM_ID}`).then((response) => {
-            console.log('[listTracks]', response)
+            console.log('[response] signals.listTracks', response)
 
             return response
         })
     }
 
     function removeTrack (trackId) {
-        return signals.deleteTrack(ROOM_ID, trackId).then((response) => {
-            console.log('[deleteTrack]', response)
+        return signals.deleteTrack(trackId).then((response) => {
+            console.log('[response] signals.deleteTrack', response)
 
             return response
         })
@@ -441,24 +444,42 @@
     }
 
     function joinRoom (roomId, label) {
-        return signals.createAgent(roomId, {label}).then(function (response) {
+        return signals.createAgent().then(function (response) {
             console.log('[response] signals.createAgent', response)
+
+            return signals.joinRoom(roomId, {label})
+        }).catch((error) => {
+            console.log('[createAgent error]', error)
+
+            throw new Error(error.message)
+        }).then(function (response) {
+            console.log('[response] signals.joinRoom', response)
 
             return response
         }).catch((error) => {
-            console.log('[createAgent error]', error)
+            console.log('[joinRoom error]', error)
 
             throw new Error(error.message)
         })
     }
 
     function leaveRoom (roomId, agentId) {
-        return signals.deleteAgent(roomId, agentId).then(function (response) {
+        return signals.leaveRoom(roomId).then(function (response) {
+            console.log('[response] signals.leaveRoom', response)
+
+            return signals.deleteAgent(agentId)
+        }).catch((error) => {
+            console.log('[leaveRoom error]', error)
+
+            throw new Error(error.message)
+        }).then(function (response) {
             console.log('[response] signals.deleteAgent', response)
 
             return response
         }).catch((error) => {
             console.log('[deleteAgent error]', error)
+
+            throw new Error(error.message)
         })
     }
 
