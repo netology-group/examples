@@ -71,8 +71,9 @@
         password: `password-${ACCOUNT_ID}`,
         clientId: `${AGENT_ID}.${ACCOUNT_ID}`,
         will: {
-            topic: `agents/${AGENT_ID}/out/${APP_NAME}/api/v1`,
-            payload: `{"jsonrpc":"2.0","method":"agent.delete","params":[{"id":"${AGENT_ID}"}],"id":"${AGENT_ID}"}`
+            topic: `agents/${AGENT_ID}/state/api/v1`,
+            payload: `{"jsonrpc":"2.0","method":"event","params":[{"type":"state.update","payload":{"agent_id":"${AGENT_ID}","data":{"online":false}}}]}`,
+            retain: true
         }
     }
 
@@ -238,7 +239,7 @@
         signalingSub.off('offer', handleSignalingSubscriptionEvent)
         signalingSub.off('answer', handleSignalingSubscriptionEvent)
         signalingSub.off('candidate', handleSignalingSubscriptionEvent)
-        signalingSub.destroy()
+//        signalingSub.destroy()
         signalingSub = null
     }
 
@@ -335,7 +336,7 @@
 
     function listAgents () {
         return signals.listAgents(`room_id:${ROOM_ID}`).then((response) => {
-            console.log('[listAgents]', response)
+            console.log('[response] signals.listAgents', response)
 
             return response
         })
@@ -423,6 +424,12 @@
 
         mqttClient.on(MQTTClient.events.CONNECT, function () {
             console.log('[mqttClient] connected')
+
+            mqttClient.publish(
+                `agents/${AGENT_ID}/state/api/v1`,
+                `{"jsonrpc":"2.0","method":"event","params":[{"type":"state.update","payload":{"agent_id":"${AGENT_ID}","data":{"online":true}}}]}`,
+                {retain: true}
+            )
         })
 
         mqttClient.on(MQTTClient.events.ERROR, function () {
@@ -430,6 +437,7 @@
         })
 
 //        mqttClient.subscribe(`agents/${AGENT_ID}/out/${APP_NAME}/api/v1`)
+//        mqttClient.subscribe(`agents/${AGENT_ID}/state/api/v1`)
 //        mqttClient.on('message', function (topic, message) {
 //            const envelope = JSON.parse(message.toString())
 //            const payload = JSON.parse(envelope.msg)
