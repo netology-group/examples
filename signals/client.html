@@ -15,11 +15,11 @@
     <div class="row">
         <div class="col-sm-12">
             <button id="connectBtn" type="button" class="btn btn-light">Connect</button>
-            <button id="joinBtn" type="button" class="btn btn-success">Join room</button>
+            <button id="joinBtn" type="button" class="btn btn-success" disabled>Join room</button>
             <button id="leaveBtn" type="button" class="btn btn-danger" hidden disabled>Leave room</button>
-            <button id="getUserMediaBtn" type="button" class="btn btn-outline-success btn-sm">Get user media</button>
+            <button id="getUserMediaBtn" type="button" class="btn btn-outline-success btn-sm" disabled>Get user media</button>
             <!--<button id="getScreenMediaBtn" type="button" class="btn btn-outline-success btn-sm" hidden>Get screen media</button>-->
-            <button id="stopUserMediaBtn" type="button" class="btn btn-outline-danger btn-sm">Stop user media</button>
+            <button id="stopUserMediaBtn" type="button" class="btn btn-outline-danger btn-sm" hidden disabled>Stop user media</button>
         </div>
     </div>
     <div class="row">
@@ -244,6 +244,8 @@
     }
 
     connectBtn.addEventListener('click', function (event) {
+        connectBtn.disabled = true
+
         connect()
     })
 
@@ -254,6 +256,8 @@
             joinBtn.hidden = true
             leaveBtn.disabled = false
             leaveBtn.hidden = false
+
+            getUserMediaBtn.disabled = false
 
             bindListeners()
 
@@ -272,6 +276,8 @@
 
     leaveBtn.addEventListener('click', function (event) {
         leaveBtn.disabled = true
+        getUserMediaBtn.disabled = true
+        stopUserMediaBtn.disabled = true
 
         if (isOnCall()) {
             closeCall()
@@ -283,6 +289,11 @@
             joinBtn.disabled = false
             joinBtn.hidden = false
             leaveBtn.hidden = true
+
+            getUserMediaBtn.disabled = true
+            getUserMediaBtn.hidden = false
+            stopUserMediaBtn.disabled = true
+            stopUserMediaBtn.hidden = true
 
             agentList = []
 
@@ -299,9 +310,14 @@
 
     getUserMediaBtn.addEventListener('click', function (event) {
         const constraints = {audio: true, video: {width: 320, height: 240}}
+        getUserMediaBtn.disabled = true
 
         gum(constraints).then(function (stream) {
-            processStream(stream)
+            processStream(stream, function() {
+                getUserMediaBtn.hidden = true
+                stopUserMediaBtn.disabled = false
+                stopUserMediaBtn.hidden = false
+            })
 
             document.getElementById('currentAgent').srcObject = stream
         })
@@ -318,19 +334,30 @@
 //    })
 
     stopUserMediaBtn.addEventListener('click', function (event) {
+        const promiseArray = []
+
         if (mediaStream !== null) {
+            stopUserMediaBtn.disabled = true
+
             mediaStream.getTracks().forEach(function (track) {
                 let trackItem = getTrackByTrackId(track.id)
-
-                removeTrack(trackItem.id).then(() => {
+                let promise = removeTrack(trackItem.id).then(() => {
                     track.stop()
                 })
+
+                promiseArray.push(promise)
             })
 
             mediaStream = null
 
             document.getElementById('currentAgent').srcObject = null
 //            document.getElementById('currentAgentScreen').srcObject = null
+
+            Promise.all(promiseArray).then(() => {
+                getUserMediaBtn.disabled = false
+                getUserMediaBtn.hidden = false
+                stopUserMediaBtn.hidden = true
+            })
         }
     })
 
@@ -384,7 +411,7 @@
         return tracks.length ? tracks[0] : null
     }
 
-    function processStream(stream, options) {
+    function processStream(stream, callback) {
         if (mediaStream === null) {
             mediaStream = new MediaStream()
         }
@@ -400,22 +427,34 @@
                 label: track.label
             }).then(function () {
                 track.onended = function (event) {
+                    console.log('[track:local] ended')
+
                     const trackItem = getTrackByTrackId(track.id)
 
                     removeTrack(trackItem.id).then(function () {
                         track.stop()
                     })
                 }
+
+                if (callback) {
+                    callback()
+                }
             })
         })
     }
 
     function connect () {
+        if (mqttClient !== null) {
+            return
+        }
+
         mqttClient = new MQTTClient(BROKER, OPTIONS)
         signals = new Signals(mqttClient, AGENT_ID, APP_NAME)
 
         mqttClient.on(MQTTClient.events.CLOSE, function() {
             console.log('[mqttClient] close')
+
+            connectBtn.disabled = false
         })
 
         mqttClient.on(MQTTClient.events.OFFLINE, function() {
@@ -425,6 +464,8 @@
         mqttClient.on(MQTTClient.events.CONNECT, function () {
             console.log('[mqttClient] connected')
 
+            joinBtn.disabled = false
+
             mqttClient.publish(
                 `agents/${AGENT_ID}/state/api/v1`,
                 `{"jsonrpc":"2.0","method":"event","params":[{"type":"state.update","payload":{"agent_id":"${AGENT_ID}","data":{"online":true}}}]}`,
@@ -432,8 +473,16 @@
             )
         })
 
+        mqttClient.on(MQTTClient.events.RECONNECT, function() {
+            console.log('[mqttClient] reconnect')
+
+            connectBtn.disabled = true
+        })
+
         mqttClient.on(MQTTClient.events.ERROR, function () {
             console.log('[mqttClient] error')
+
+            connectBtn.disabled = false
         })
 
 //        mqttClient.subscribe(`agents/${AGENT_ID}/out/${APP_NAME}/api/v1`)
@@ -801,7 +850,7 @@
         })
 
 //        peerConnection.onconnectionstatechange = handleConnectionStateChangeEvent
-//        peerConnection.onnegotiationneeded = handleNegotiationNeededEvent
+        peerConnection.onnegotiationneeded = handleNegotiationNeededEvent
         peerConnection.onicecandidate = handleICECandidateEvent
         peerConnection.onremovestream = handleRemoveStreamEvent
         peerConnection.oniceconnectionstatechange = handleICEConnectionStateChangeEvent
@@ -814,7 +863,7 @@
         console.log('[closePeerConnection]')
 
 //        peerConnection.onconnectionstatechange = null
-//        peerConnection.onnegotiationneeded = null
+        peerConnection.onnegotiationneeded = null
         peerConnection.onicecandidate = null
         peerConnection.onremovestream = null
         peerConnection.oniceconnectionstatechange = null
@@ -830,23 +879,12 @@
 //        console.log('[handleConnectionStateChangeEvent]', event)
 //    }
 
-//    function handleNegotiationNeededEvent() {
-//        console.log('[handleNegotiationNeededEvent]')
-//
-//        peerConnection.createOffer()
-//            .then(function(offer) {
-//                return peerConnection.setLocalDescription(offer)
-//            })
-//            .then(function() {
-//                const offer = peerConnection.localDescription
-//
-//                sendOffer(calleeAgentId, offer, [])
-//            })
-//            .catch(reportError)
-//    }
+    function handleNegotiationNeededEvent() {
+        console.log('[pc] negotiationneeded')
+    }
 
     function handleTrackEvent(event) {
-        console.log('[handleTrackEvent]', event)
+        console.log('[pc] track', event)
 
         const trackData = {
             sourceId: callerAgentId === AGENT_ID ? calleeAgentId : callerAgentId,
@@ -858,25 +896,33 @@
         }
 
         event.track.onended = function (event) {
-            console.log('[track] onended', event)
+            console.log('[track] ended', event)
 
-            const trackItem = getLocalTrackByTrackId(event.target.id)
+            if (!isOnCall()) {
+                const trackItem = getLocalTrackByTrackId(event.target.id)
+
+                if (trackItem) {
+                    removeTrack(trackItem.id)
+                }
+            }
+        }
+
+        event.streams[0].onremovetrack = function (event) {
+            console.log('[stream] removetrack', event)
+
+            const trackItem = getLocalTrackByTrackId(event.track.id)
 
             if (trackItem) {
                 removeTrack(trackItem.id)
             }
         }
 
-        event.streams[0].onremovetrack = function (event) {
-            console.log('[stream] onremovetrack', event)
-        }
-
         event.track.onmute = function (event) {
-            console.log('[track] onmute', event)
+            console.log('[track] mute', event)
         }
 
         event.track.onunmute = function (event) {
-            console.log('[track] onunmute', event)
+            console.log('[track] unmute', event)
         }
 
         document.getElementById('remoteAgent').srcObject = event.streams[0]
@@ -894,8 +940,7 @@
     }
 
     function handleRemoveStreamEvent(event) {
-        console.log('Stream removed')
-//        closeCall()
+        console.log('[pc] removestream', event)
     }
 
     function handleICEConnectionStateChangeEvent(event) {
