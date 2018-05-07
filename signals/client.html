@@ -81,7 +81,6 @@
     let signals = null
     let agentSub = null
     let trackSub = null
-    let signalingSub = null
     let mediaStream = null
     let agentList = []
     let trackList = []
@@ -137,8 +136,8 @@
         })
     }
 
-    function handleSignalingSubscriptionEvent (event) {
-        console.log('[signalingSubscription:event]', event.type, event.data)
+    function handleSignalingEvent (event) {
+        console.log('[signaling:event]', event.type, event.data)
         let desc
 
         switch (event.type) {
@@ -217,12 +216,9 @@
             trackSub.on('delete', handleTrackSubscriptionEvent)
         })
 
-        signals.subscribeSignaling().then((signalingSubscription) => {
-            signalingSub = signalingSubscription
-            signalingSub.on('offer', handleSignalingSubscriptionEvent)
-            signalingSub.on('answer', handleSignalingSubscriptionEvent)
-            signalingSub.on('candidate', handleSignalingSubscriptionEvent)
-        })
+        signals.on('offer', handleSignalingEvent)
+        signals.on('answer', handleSignalingEvent)
+        signals.on('candidate', handleSignalingEvent)
     }
 
     function unbindListeners () {
@@ -236,11 +232,9 @@
         trackSub.destroy()
         trackSub = null
 
-        signalingSub.off('offer', handleSignalingSubscriptionEvent)
-        signalingSub.off('answer', handleSignalingSubscriptionEvent)
-        signalingSub.off('candidate', handleSignalingSubscriptionEvent)
-//        signalingSub.destroy()
-        signalingSub = null
+        signals.off('offer', handleSignalingEvent)
+        signals.off('answer', handleSignalingEvent)
+        signals.off('candidate', handleSignalingEvent)
     }
 
     connectBtn.addEventListener('click', function (event) {
