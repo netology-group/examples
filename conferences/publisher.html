@@ -1,0 +1,562 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Publisher and Listener | Conferences demonstration</title>
+    <link rel="stylesheet" href="https://maxcdn.bootstrapcdn.com/bootstrap/4.0.0/css/bootstrap.min.css" integrity="sha384-Gn5384xqQ1aoWXA+058RXPxPg6fy4IWvTNh0E263XmFcJlSAwiGgFAW/dAiS6JXm" crossorigin="anonymous">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/open-iconic/1.1.1/font/css/open-iconic-bootstrap.min.css">
+    <script src="https://webrtc.github.io/adapter/adapter-latest.js"></script>
+    <script src="https://unpkg.com/@netology-group/mqtt-client@0.3.1/dist/index.js"></script>
+
+    <script src="../build/sdp.js"></script>
+
+    <script src="./janus.js"></script>
+    <!--<script src="./conference.js"></script>-->
+
+    <script src="./media.js"></script>
+    <script src="./pc.js"></script>
+</head>
+<body>
+
+<div class="container">
+    <div class="row">
+        <div class="col-sm-12">
+            <button id="connectBtn" type="button" class="btn btn-primary">Connect</button>
+            |
+            <button id="publishBtn" type="button" class="btn btn-outline-success btn-sm">Publish</button>
+            or
+            <button id="listenBtn" type="button" class="btn btn-outline-success btn-sm">Listen</button>
+            |
+            <button id="switchToScreenBtn" type="button" class="btn btn-outline-success btn-sm">Share screen</button>
+            <-->
+            <button id="switchToCameraBtn" type="button" class="btn btn-outline-success btn-sm">Share camera</button>
+            |
+            <button id="cancelBtn" type="button" class="btn btn-outline-danger btn-sm">Cancel</button>
+        </div>
+    </div>
+    <br>
+    <div class="row">
+        <div class="col-sm-3">
+            <div>
+                <video id="video" width="100%" autoplay controls muted></video>
+            </div>
+            <br>
+            <div>
+                <video id="screen" width="100%" autoplay controls></video>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+    const uuidv4 = (function () {
+        /*
+        https://gist.github.com/jed/982883
+         */
+        function b(a) {
+            return a ? (a ^ Math.random() * 16 >> a / 4).toString(16) : ([1e7] + -1e3 + -4e3 + -8e3 + -1e11).replace(/[018]/g, b)
+        }
+
+        return function () {
+            return b()
+        }
+    }())
+</script>
+
+<script>
+    const connectBtn = document.getElementById('connectBtn')
+    const publishBtn = document.getElementById('publishBtn')
+    const listenBtn = document.getElementById('listenBtn')
+    const cancelBtn = document.getElementById('cancelBtn')
+
+    const switchToScreenBtn = document.getElementById('switchToScreenBtn')
+    const switchToCameraBtn = document.getElementById('switchToCameraBtn')
+
+    const qsParams = getParams(location.search.slice(1))
+    const ENV = qsParams.env || 'staging'
+    const CONFERENCE_APP_NAME = `conference.${ENV}.svc.netology-group.services`
+    const params = {
+        agent_label: 'web',
+        account_label: uuidv4(),
+        audience: `${ENV}.netology-group.ru`,
+        url: `wss://mqtt.${ENV}.svc.netology-group.services:58443/mqtt`,
+
+        app_label: 'alpha',
+        app_name: `janus-gateway.${ENV}.svc.netology-group.services`,
+
+//        stun_url: 'stun:stun.l.google.com:19302',
+        stun_url: 'stun:stun.netology-group.services:3478',
+
+//        turn_url: 'turn:numb.viagenie.ca',
+//        turn_username: 'a.konstantinov@netology-group.ru',
+//        turn_credential: '123123'
+        turn_url: 'turn:turn.netology-group.services:3478',
+        turn_username: 'ntg',
+        turn_credential: 'password'
+    }
+
+    const BROKER = decodeURIComponent(params.url)
+
+    const AGENT_LABEL = params.agent_label
+    const ACCOUNT_LABEL = params.account_label
+    const AUDIENCE = params.audience
+
+    const APP_LABEL = params.app_label
+    const APP_NAME = params.app_name
+
+    const STUN_URL = qsParams.stun_url || params.stun_url
+
+    const TURN_URL = qsParams.turn_url || params.turn_url
+    const TURN_USERNAME = qsParams.turn_username || params.turn_username
+    const TURN_CREDENTIAL = qsParams.turn_credential || params.turn_credential
+
+    console.groupCollapsed('[STUN & TURN settings]')
+    console.log('[STUN_URL]', STUN_URL)
+    console.log('[TURN_URL]', TURN_URL)
+    console.log('[TURN_USERNAME]', TURN_USERNAME)
+    console.log('[TURN_CREDENTIAL]', TURN_CREDENTIAL)
+    console.groupEnd()
+
+    const OPTIONS = {
+        username: `user-${ACCOUNT_LABEL}`,
+        password: `password-${ACCOUNT_LABEL}`,
+        clientId: `v1.mqtt3/agents/${AGENT_LABEL}.${ACCOUNT_LABEL}.${AUDIENCE}`
+    }
+
+    let requestMap = {}
+
+    let cameraStream = null
+    let deviceStream = null
+    let peerConnection = null
+
+    let sessionId = null
+    let handlerId = null
+    let rtcId = null
+    let roomId = '00000001-0000-1000-a000-000000000000'
+
+    let mqttClient = null
+
+    function connect() {
+        if (mqttClient !== null) {
+            return
+        }
+
+        mqttClient = new MQTTClient(BROKER)
+
+        mqttClient.connect(OPTIONS)
+
+        mqttClient.on(MQTTClient.events.CLOSE, function () {
+            console.log('[mqttClient] close')
+
+            connectBtn.disabled = false
+        })
+
+        mqttClient.on(MQTTClient.events.OFFLINE, function () {
+            console.log('[mqttClient] offline')
+        })
+
+        mqttClient.on(MQTTClient.events.CONNECT, function () {
+            console.log('[mqttClient] connected')
+
+            // подписка на события janus-сервера
+            mqttClient.subscribe(`apps/${APP_NAME}/api/v1/responses`)
+            mqttClient.subscribe(`agents/${APP_LABEL}.${APP_NAME}/api/v1/in/${CONFERENCE_APP_NAME}`)
+            // conference
+//            mqttClient.subscribe(`agents/${AGENT_LABEL}.${ACCOUNT_LABEL}.${AUDIENCE}/api/v1/in/${CONFERENCE_APP_NAME}`)
+//            mqttClient.subscribe(`agents/${AGENT_LABEL}.${ACCOUNT_LABEL}.${AUDIENCE}/api/v1/out/${CONFERENCE_APP_NAME}`)
+//            mqttClient.subscribe(`apps/${CONFERENCE_APP_NAME}/api/v1/rooms/+/events`)
+//            mqttClient.subscribe(`#`)
+
+            // for conference
+//            createRoomResource(
+//                [
+//                    Math.round(Date.now() / 1000),
+//                    Math.round(
+//                        (new Date(new Date().setFullYear(new Date().getFullYear() + 1))).getTime() / 1000
+//                    )
+//                ],
+//                params.audience
+//            )
+//            listRTCResource()
+
+            // for janus-gateway
+            createJanusSession()
+        })
+
+        mqttClient.on(MQTTClient.events.RECONNECT, function () {
+            console.log('[mqttClient] reconnect')
+
+            connectBtn.disabled = true
+        })
+
+        mqttClient.on(MQTTClient.events.ERROR, function () {
+            console.log('[mqttClient] error')
+
+            connectBtn.disabled = false
+        })
+
+        // for janus-gateway
+        mqttClient.on('message', function (topic, message) {
+            const envelope = JSON.parse(message.toString())
+            const payload = JSON.parse(envelope.payload)
+            const accountLabel = envelope.properties.account_label
+            const transaction = payload && payload.transaction ? `${payload.transaction} ` : ''
+
+            console.groupCollapsed(
+                accountLabel === ACCOUNT_LABEL
+                    ? `${transaction}[request${payload && payload.janus ? `:${payload.janus}` : ''}]`
+                    : accountLabel === 'janus-gateway'
+                        ? `${transaction}[janus-gateway${payload && payload.janus ? `:${payload.janus}` : ''}]`
+                        : '[message]'
+            )
+            console.log('[topic]', topic)
+            console.log('[envelope properties]', envelope.properties)
+            console.log('[payload]', payload)
+            if (payload && payload.body) {
+                console.log('[payload body]', payload.body)
+            }
+            if (payload && payload.plugindata) {
+                console.log('[plugindata]', payload.plugindata)
+            }
+            console.groupEnd()
+
+            if (topic !== `apps/${APP_NAME}/api/v1/responses`) {
+                return
+            }
+
+            if (payload) {
+                const cid = payload.transaction
+                const req = requestMap[cid]
+
+                switch (payload.janus) {
+                    case 'media':
+                        console.log('[janus media]', `type: ${payload.type}`, `receiving: ${payload.receiving}`)
+                        break
+                    case 'event':
+                        if (req) {
+                            let desc
+
+                            switch (req) {
+                                case 'stream.create':
+                                case 'stream.read':
+                                    desc = new RTCSessionDescription(payload.jsep)
+
+                                    peerConnection.setRemoteDescription(desc).catch(reportError)
+
+                                    break
+                            }
+                        }
+
+                        break
+                    case 'success':
+                        if (req) {
+                            switch (req) {
+                                case 'create':
+                                    sessionId = payload.data.id
+
+                                    attachJanusPluginHandler()
+                                    break
+                                case 'attach':
+                                    handlerId = payload.data.id
+                                    break
+                            }
+                        }
+
+                        break
+                    case 'error':
+                        console.log('request error', payload.error)
+                        break
+                }
+            }
+        })
+
+        // for conference
+//        mqttClient.on('message', function (topic, message) {
+//            const envelope = JSON.parse(message.toString())
+//            const properties = envelope.properties
+//            const payload = JSON.parse(envelope.payload)
+//            const accountLabel = envelope.properties.account_label
+//            const correlation_data = properties && properties.correlation_data ? `${properties.correlation_data} ` : ''
+//            const type = properties && properties.type ? `:${properties.type}` : ''
+//            const method = properties && properties.method ? `:${properties.method}` : ''
+//            const status = properties && properties.status ? `:${properties.status}` : ''
+//
+//            if (
+//                topic === 'apps/janus-gateway.testing.netology-group.services/api/v1/events/media'
+//                && properties.agent_label === 'events-alpha'
+//            ) {
+//                return
+//            }
+//
+//            console.groupCollapsed(
+//                accountLabel === ACCOUNT_LABEL
+//                    ? `${correlation_data}[self${type}${method}]`
+//                    : `${correlation_data}[${accountLabel}${type}${method}${status}]`
+//            )
+//            console.log('[topic]', topic)
+//            console.log('[properties]', envelope.properties)
+//            console.log('[payload]', payload)
+//            console.groupEnd()
+//
+//            if (topic !== `agents/${AGENT_LABEL}.${ACCOUNT_LABEL}.${AUDIENCE}/api/v1/in/${CONFERENCE_APP_NAME}`) {
+//                return
+//            }
+//
+//            if (properties && payload) {
+//                const cid = properties.correlation_data
+//                const req = requestMap[cid]
+//
+//                if (req) {
+//                    switch (req) {
+//                        case 'room.create':
+//                            console.log(req, payload)
+//                            break
+//                        case 'rtc.create':
+//                            rtcId = payload.id
+//
+//                            createOffer({offerToReceiveVideo: false, offerToReceiveAudio: false})
+//                                .then(function () {
+//                                    const offer = peerConnection.localDescription
+//
+//                                    createSignal(offer)
+//                                })
+//
+//                            break
+//                        case 'rtc.read':
+//                            createOffer({offerToReceiveVideo: true, offerToReceiveAudio: true})
+//                                .then(function () {
+//                                    const offer = peerConnection.localDescription
+//
+//                                    createSignal(offer)
+//                                })
+//
+//                            break
+//                        case 'rtc.list':
+//                            console.log('rtc.list', payload)
+//
+//                            break
+//                        case 'signal.create':
+//                            if (payload.jsep && payload.jsep.type === 'answer') {
+//                                let desc = new RTCSessionDescription(payload.jsep)
+//
+//                                peerConnection.setRemoteDescription(desc).catch(reportError)
+//                            }
+//
+//                            break
+//                    }
+//                }
+//            }
+//        })
+    }
+
+    // offer
+
+    function createOffer (offerOptions) {
+        return peerConnection.createOffer(offerOptions)
+            .then(function (offer) {
+//                return peerConnection.setLocalDescription(offer)
+                return peerConnection.setLocalDescription({
+                    type: 'offer',
+                    sdp: transformOfferSDP(offer.sdp)
+                })
+            })
+            .catch(reportError)
+    }
+
+    // buttons
+
+    connectBtn.addEventListener('click', function (event) {
+        connectBtn.disabled = true
+
+        connect()
+    })
+
+    publishBtn.addEventListener('click', function (event) {
+        const constraints = {audio: true, video: {width: 1280, height: 720}}
+
+//        getFakeStream().then(function (stream) {
+        gum(constraints).then(function (stream) {
+            cameraStream = stream
+            document.getElementById('video').srcObject = stream
+
+            createPeerConnection()
+
+            stream.getTracks().forEach(function (track) {
+                peerConnection.addTrack(track, stream)
+            })
+
+            // for conference
+//            createRTCResource()
+
+            // for janus-gateway
+            createOffer({offerToReceiveVideo: false, offerToReceiveAudio: false})
+                .then(function () {
+                    const offer = peerConnection.localDescription
+
+                    createStreamResource(offer)
+                })
+
+            // alternative: collect all candidates and then send request
+//            createOffer({offerToReceiveVideo: false, offerToReceiveAudio: false})
+        })
+    })
+
+    listenBtn.addEventListener('click', function (event) {
+        createPeerConnection()
+
+        // for conference
+//        readRTCResource()
+
+        // for janus-gateway
+        createOffer({offerToReceiveVideo: true, offerToReceiveAudio: true})
+            .then(function () {
+                const offer = peerConnection.localDescription
+
+                readStreamResource(offer)
+            })
+    })
+
+    cancelBtn.addEventListener('click', function (event) {
+        closePeerConnection()
+
+        document.getElementById('video').srcObject = null
+        document.getElementById('screen').srcObject = null
+
+        if (cameraStream) {
+            stopStream(cameraStream)
+            cameraStream = null
+        }
+
+        if (deviceStream) {
+            stopStream(deviceStream)
+            deviceStream = null
+        }
+
+        requestMap = {}
+
+//        sessionId = null
+//        handlerId = null
+        rtcId = null
+    })
+
+    switchToScreenBtn.addEventListener('click', function (event) {
+        if (deviceStream) {
+            // merge camera and screen
+//            mergeVideoStreams(deviceStream, cameraStream).then(function(stream) {
+//                document.getElementById('video').srcObject = stream
+//
+//                switchTo(peerConnection, stream)
+//            })
+
+            switchTo(peerConnection, deviceStream)
+        } else {
+            gdm().then(function (stream) {
+                deviceStream = stream
+
+//                mergeVideoStreams(deviceStream, cameraStream).then(function (stream) {
+//                    document.getElementById('video').srcObject = stream
+//
+//                    switchTo(peerConnection, stream)
+//                })
+
+                document.getElementById('screen').srcObject = deviceStream
+
+                switchTo(peerConnection, deviceStream)
+            })
+        }
+    })
+
+    switchToCameraBtn.addEventListener('click', function (event) {
+        if (cameraStream) {
+//            document.getElementById('video').srcObject = cameraStream
+
+            switchTo(peerConnection, cameraStream)
+
+//            clearMerger()
+            stopStream(deviceStream)
+            deviceStream = null
+            document.getElementById('screen').srcObject = null
+        }
+    })
+
+
+    function reportError(error) {
+        console.error('[Error]', error.name, error.message)
+    }
+
+    function getPayloadByCodec (codec, rtp) {
+        let payload = null
+
+        for (var i = 0; i < rtp.length; i++) {
+            if (rtp[i].codec === codec) {
+                payload = rtp[i].payload
+
+                break
+            }
+        }
+
+        return payload
+    }
+
+    function filterByPayload (payload) {
+        return function(item) {
+            return item.payload === payload
+        }
+    }
+
+    function mapByPayload (payload) {
+        return function (item) {
+            item.payload = payload
+
+            return item
+        }
+    }
+
+    function transformOfferSDP (sdp) {
+        const sdpParsed = SDPTransform.parse(sdp)
+        const audioPayload = getPayloadByCodec('opus', sdpParsed.media[0].rtp)
+        const videoPayload = getPayloadByCodec('H264', sdpParsed.media[1].rtp)
+        const modifiedAudioPayload = 111
+        const modifiedVideoPayload = 126
+
+        console.log('[sdp] original', SDPTransform.parse(sdp))
+        console.log('[opus] payload', audioPayload, '-->', modifiedAudioPayload)
+        console.log('[H264] payload', videoPayload, '-->', modifiedVideoPayload)
+
+        // audio
+        sdpParsed.media[0].rtp = sdpParsed.media[0].rtp.filter(filterByPayload(audioPayload)).map(mapByPayload(modifiedAudioPayload))
+        sdpParsed.media[0].fmtp = sdpParsed.media[0].fmtp.filter(filterByPayload(audioPayload)).map(mapByPayload(modifiedAudioPayload))
+
+        if (sdpParsed.media[0].rtcpFb) {
+            sdpParsed.media[0].rtcpFb = sdpParsed.media[0].rtcpFb.filter(filterByPayload(audioPayload)).map(mapByPayload(modifiedAudioPayload))
+        }
+
+        sdpParsed.media[0].payloads = String(modifiedAudioPayload)
+//        sdpParsed.media[0].bandwidth = [{type: 'AS', limit: '20'}]
+
+        // video
+        sdpParsed.media[1].rtp = sdpParsed.media[1].rtp.filter(filterByPayload(videoPayload)).map(mapByPayload(modifiedVideoPayload))
+        sdpParsed.media[1].fmtp = sdpParsed.media[1].fmtp.filter(filterByPayload(videoPayload)).map(mapByPayload(modifiedVideoPayload))
+        sdpParsed.media[1].rtcpFb = sdpParsed.media[1].rtcpFb.filter(filterByPayload(videoPayload)).map(mapByPayload(modifiedVideoPayload))
+        sdpParsed.media[1].payloads = String(modifiedVideoPayload)
+//        sdpParsed.media[1].bandwidth = [{type: 'AS', limit: '20'}]
+
+        console.log('[sdp] modified', sdpParsed)
+
+        return SDPTransform.write(sdpParsed)
+    }
+
+    function getParams (qs) {
+        const params = {}
+
+        qs.split('&').map((str) => {
+            const [key, value] = str.split('=')
+            params[key] = value
+        })
+
+        return params
+    }
+</script>
+
+</body>
+</html>
